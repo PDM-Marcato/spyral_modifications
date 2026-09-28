@@ -311,7 +311,7 @@ def Clusters_Metrics(clusters, labels, revaluation_parms=RevaluationParameters()
         )
  
         if best_circle is None:
-            cluster_metrics.append([cluster.label, 0.0, 0.0, -1.0,
+            cluster_metrics.append([cluster.label, 0.0, 0.0, None,
                                      entry_x, entry_y, entry_z,
                                      exit_x, exit_y, exit_z, 0])
             continue
@@ -415,8 +415,73 @@ def Join_Clusters(cluster_metrics, clusters, labels, cloud, revaluation_parms=Re
  
     newClusters = Create_Cluster(cloud, newLabels)
     return newClusters, newLabels
- 
- 
+
+def Reorder_Labels(labels):
+    """
+    Reorder and rename labels according to the size of each group.
+
+    The label -1 is ignored and remains -1.
+
+    Parameters
+    ----------
+    labels : np.ndarray
+        Array containing the labels assigned to each point.
+
+    Returns
+    -------
+    newLabels : np.ndarray
+        Array with the labels reordered and renamed sequentially,
+        starting from 0 for the largest group.
+    """
+
+    # Remove -1 and count the number of points for each label
+    unique_labels, counts = np.unique(
+        labels[labels != -1],
+        return_counts=True
+    )
+
+    # Sort labels from the largest group to the smallest
+    order = unique_labels[np.argsort(-counts)]
+
+    # Create the output array
+    newLabels = np.full(len(labels), -1)
+
+    # Rename the labels according to their order
+    for new_label, old_label in enumerate(order):
+        newLabels[labels == old_label] = new_label
+
+    return newLabels
+    
+def Chose_Cluster_Direction(cloud, labels, revaluation_parms=RevaluationParameters()):
+    
+    labels = Reorder_Labels(labels)
+    clusters = Create_Cluster(cloud, labels)
+    cluster_metrics = Clusters_Metrics(clusters, labels, revaluation_parms)
+    
+    new_clusters: list[LabeledCloud] = []
+    for label in np.unique(labels):
+        mask = (labels == label)
+        if label == -1 or cluster_metrics[label, 10] == 0:
+            new_clusters.append(
+                LabeledCloud(
+                    label,
+                    Direction.FORWARD,
+                    PointCloud(cloud.event_number, cloud.data[mask]),
+                    np.flatnonzero(mask),
+                )
+            )
+            
+        else:
+            new_clusters.append(
+                LabeledCloud(
+                    label,
+                    Direction.FORWARD if cluster_metrics[label, 3] > 0.0 else Direction.BACKWARD,
+                    PointCloud(cloud.event_number, cloud.data[mask]),
+                    np.flatnonzero(mask),
+                )
+            )
+    return new_clusters, labels
+
 def New_Clustering_Method(cloud, revaluation_parms=RevaluationParameters()):
     """
     Full pipeline: TriplClust -> per-cluster circle-fit based revaluation
@@ -432,6 +497,6 @@ def New_Clustering_Method(cloud, revaluation_parms=RevaluationParameters()):
     cluster_metrics = Clusters_Metrics(new_clusters, new_labels, revaluation_parms)
     joined_clusters, joined_labels = Join_Clusters(
         cluster_metrics, new_clusters, new_labels, cloud, revaluation_parms)
+    finished_clusters, finished_labels = Chose_Cluster_Direction(cloud, joined_labels, revaluation_parms)
  
-    return joined_clusters, joined_labels
-
+    return finished_clusters, finished_labels
