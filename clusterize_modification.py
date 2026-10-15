@@ -297,10 +297,6 @@ def Clusters_Metrics(clusters, labels, revaluation_parms=RevaluationParameters()
         # entry/exit point averages over the raw cluster (first/last 3 hits),
         # fixed to average across points (rows) per-axis, not across axes
         # within a single point.
-        entry_x, entry_y, entry_z = (
-            np.mean(cluster_data[:3, 0]), np.mean(cluster_data[:3, 1]), np.mean(cluster_data[:3, 2]))
-        exit_x, exit_y, exit_z = (
-            np.mean(cluster_data[-3:, 0]), np.mean(cluster_data[-3:, 1]), np.mean(cluster_data[-3:, 2]))
  
         best_circle = ransac_circle_fit(
             cluster_data[:, 0:3],
@@ -311,9 +307,7 @@ def Clusters_Metrics(clusters, labels, revaluation_parms=RevaluationParameters()
         )
  
         if best_circle is None:
-            cluster_metrics.append([cluster.label, 0.0, 0.0, None,
-                                     entry_x, entry_y, entry_z,
-                                     exit_x, exit_y, exit_z, 0])
+            cluster_metrics.append([cluster.label, 0.0, 0.0, None, z, 0])
             continue
  
         # Restrict the arc/line fit to the circle's own inliers instead of
@@ -340,19 +334,15 @@ def Clusters_Metrics(clusters, labels, revaluation_parms=RevaluationParameters()
         lines = RANSAC_Line(z_in, arc, revaluation_parms)
  
         if lines is None or len(lines) == 0:
-            cluster_metrics.append([cluster.label, x_c, y_c, -1.0,
-                                     entry_x, entry_y, entry_z,
-                                     exit_x, exit_y, exit_z, 0])
+            cluster_metrics.append([cluster.label, x_c, y_c, -1.0, z, 0])
             continue
  
         best_line = lines[0]
         m, b = best_line.ClusterFitP1
         angle_degrees = np.degrees(np.arctan(m))
-        cluster_metrics.append([cluster.label, x_c, y_c, angle_degrees,
-                                 entry_x, entry_y, entry_z,
-                                 exit_x, exit_y, exit_z, 1])
+        cluster_metrics.append([cluster.label, x_c, y_c, angle_degrees, z, 1])
  
-    return np.array(cluster_metrics)
+    return cluster_metrics
  
  
 def Join_Clusters(cluster_metrics, clusters, labels, cloud, revaluation_parms=RevaluationParameters()):
@@ -380,19 +370,23 @@ def Join_Clusters(cluster_metrics, clusters, labels, cloud, revaluation_parms=Re
         # -1.0) -- it can't be meaningfully compared to other clusters, so
         # keep it as its own singleton group instead of letting it merge
         # with (or absorb) real clusters based on those placeholders.
-        if cluster_metrics[i, 10] == 0:
+        if cluster_metrics[i][5] == 0:
             groups.append(group)
             continue
  
         for j in range(i + 1, n):
             if j in used:
                 continue
-            if cluster_metrics[j, 10] == 0:
+            if cluster_metrics[j][5] == 0:
                 continue  # skip failed-fit rows -- their metrics aren't meaningful
- 
-            dx = cluster_metrics[i, 1] - cluster_metrics[j, 1]
-            dy = cluster_metrics[i, 2] - cluster_metrics[j, 2]
-            dm = cluster_metrics[i, 3] - cluster_metrics[j, 3]
+            
+            cluster_overlap = range_overlap(np.array(cluster_metrics[i][4]), np.array(cluster_metrics[j][4]))
+            if cluster_overlap > 0.5:
+                continue
+            dx = cluster_metrics[i][1] - cluster_metrics[j][1]
+            dy = cluster_metrics[i][2] - cluster_metrics[j][2]
+            dm = cluster_metrics[i][3] - cluster_metrics[j][3]
+            
  
             if np.hypot(dx, dy) < revaluation_parms.zone_1:
                 group.append(j)
@@ -406,7 +400,7 @@ def Join_Clusters(cluster_metrics, clusters, labels, cloud, revaluation_parms=Re
     newLabels = np.full(len(labels), -1)
     for groupNumber, group in enumerate(groups):
         for row in group:
-            cluster_label = cluster_metrics[row, 0]
+            cluster_label = cluster_metrics[row][0]
             cluster_obj = cluster_by_label.get(cluster_label)
             if cluster_obj is None:
                 continue
@@ -481,6 +475,13 @@ def Chose_Cluster_Direction(cloud, labels, revaluation_parms=RevaluationParamete
                 )
             )
     return new_clusters, labels
+    
+def range_overlap(a, b, lo=5, hi=95):
+    a_lo, a_hi = np.percentile(a, [lo, hi])
+    b_lo, b_hi = np.percentile(b, [lo, hi])
+    inter = max(0.0, min(a_hi, b_hi) - max(a_lo, b_lo))
+    union = max(a_hi, b_hi) - min(a_lo, b_lo)
+    return inter / union 
 
 def New_Clustering_Method(cloud, revaluation_parms=RevaluationParameters()):
     """
@@ -495,8 +496,7 @@ def New_Clustering_Method(cloud, revaluation_parms=RevaluationParameters()):
     new_clusters = Create_Cluster(cloud, new_labels)
  
     cluster_metrics = Clusters_Metrics(new_clusters, new_labels, revaluation_parms)
-    joined_clusters, joined_labels = Join_Clusters(
-        cluster_metrics, new_clusters, new_labels, cloud, revaluation_parms)
+    joined_clusters, joined_labels = Join_Clusters(cluster_metrics, new_clusters, new_labels, cloud, revaluation_parms)
     finished_clusters, finished_labels = Chose_Cluster_Direction(cloud, joined_labels, revaluation_parms)
  
     return finished_clusters, finished_labels
