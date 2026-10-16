@@ -31,6 +31,7 @@ class RevaluationParameters:
     zone_1: float = 10.0
     zone_2: float = 25.0
     dm: float = 10.0
+    reeavaluate_all: bool = False
     
     rng_seed: int = 42   # NOTE: never passed into ransac_circle_fit / ransac_multi_circle_fit /
     # RANSAC_Line from this file. If those functions don't read a seed
@@ -256,18 +257,23 @@ def Clusters_Revaluation(clusters, labels, revaluation_parms=RevaluationParamete
             n_iterations=revaluation_parms.n_iterations,
             min_inliers_absolute=revaluation_parms.min_inliers,
             verbose=False)
-
-        if len(fitted_circles) > 1:
-            revaluation_labels = TriplClust_Revaluation(
-                cluster_data, revaluation_parms)
-            revaluation_labels, number_labels = Relabel_Cluster(
-                revaluation_labels, current_label)
+        
+        if revaluation_parms.reeavaluate_all:
+            revaluation_labels = TriplClust_Revaluation(cluster_data, revaluation_parms)
+            revaluation_labels, number_labels = Relabel_Cluster(revaluation_labels, current_label)
             current_label += number_labels
             new_labels[mask] = revaluation_labels
+        
         else:
-            new_labels[mask] = current_label
-            current_label += 1
-            
+            if len(fitted_circles) > 1:
+                revaluation_labels = TriplClust_Revaluation(cluster_data, revaluation_parms)
+                revaluation_labels, number_labels = Relabel_Cluster(revaluation_labels, current_label)
+                current_label += number_labels
+                new_labels[mask] = revaluation_labels
+            else:
+                new_labels[mask] = current_label
+                current_label += 1
+                
     return new_labels
 
 def Clusters_Metrics(clusters, labels, revaluation_parms=RevaluationParameters()):
