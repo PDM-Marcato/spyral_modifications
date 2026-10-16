@@ -24,7 +24,10 @@ class RevaluationParameters:
     n_iterations: int = 2000
     origin_weight: float = 2.0
     max_revaluation: int = 5
-    
+    use_radius: bool = True
+    ang_min:float = 2.5
+    ang_max:float = 7.5
+    overlap_tol:float = 0.5
     zone_1: float = 10.0
     zone_2: float = 25.0
     dm: float = 10.0
@@ -105,7 +108,7 @@ def RANSAC_Line(x, y, revaluation_parms=RevaluationParameters()):
     return clusters
 
 
-def Revaluation_Step(cluster_data, idx_remaining, revaluation_parms=RevaluationParameters(), use_radius=True):
+def Revaluation_Step(cluster_data, idx_remaining, revaluation_parms=RevaluationParameters()):
     """
     Fit a single circle to the remaining (not-yet-assigned) hits in a cluster,
     then, among the hits near that circle, unroll the arc length and fit a
@@ -150,7 +153,7 @@ def Revaluation_Step(cluster_data, idx_remaining, revaluation_parms=RevaluationP
 
     theta = np.arctan2(y_rot[inside_mask], x_rot[inside_mask])
 
-    if use_radius:
+    if revaluation_parms.use_radius:
         arc = theta * radius
     else:
         rho = np.linalg.norm(np.column_stack(
@@ -181,11 +184,11 @@ def Revaluation_Step(cluster_data, idx_remaining, revaluation_parms=RevaluationP
         # one-line comment explaining the physical reasoning so it's not
         # mistaken for a typo (7.5/2.5 swapped) by a future reader.
         if back:
-            if main_angle_degrees - 7.5 < angle_degrees < main_angle_degrees + 2.5:
+            if main_angle_degrees - revaluation_parms.ang_max < angle_degrees < main_angle_degrees + revaluation_parms.ang_min:
                 idx.append(l.ClusterIndex)
                 continue
         else:
-            if main_angle_degrees - 2.5 < angle_degrees < main_angle_degrees + 7.5:
+            if main_angle_degrees - revaluation_parms.ang_min < angle_degrees < main_angle_degrees + revaluation_parms.ang_max:
                 idx.append(l.ClusterIndex)
                 continue
 
@@ -381,7 +384,7 @@ def Join_Clusters(cluster_metrics, clusters, labels, cloud, revaluation_parms=Re
                 continue  # skip failed-fit rows -- their metrics aren't meaningful
             
             cluster_overlap = range_overlap(np.array(cluster_metrics[i][4]), np.array(cluster_metrics[j][4]))
-            if cluster_overlap > 0.5:
+            if cluster_overlap > revaluation_parms.overlap_tol:
                 continue
             dx = cluster_metrics[i][1] - cluster_metrics[j][1]
             dy = cluster_metrics[i][2] - cluster_metrics[j][2]
