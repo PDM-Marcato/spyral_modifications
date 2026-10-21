@@ -7,6 +7,8 @@ from scipy.stats import linregress
 from spyral.core.cluster import Cluster, Direction
 import sys
 
+from scipy.optimize import least_squares
+
 sys.path.insert(0, "/home/danilo-marcato/Documents/ransac_cpp")
 
 from ransac_circle_fit import ransac_circle_fit, ransac_multi_circle_fit
@@ -33,7 +35,11 @@ class Circle:
     center_x: float
     center_y: float
     radius: float
-    
+
+@dataclass
+class NewEstimateParameters:
+	min_inliers: int = 10
+
 def Closest_Origin(center_x, center_y, radius):
     # Calculate distance from origin to center
     d = np.sqrt(center_x**2 + center_y**2)
@@ -336,6 +342,28 @@ def Curved_Tracks_Estimation(cluster, det_params):
             direction=direction.value,
         )
 
+def least_squares_circle_through_point_geometric(
+    x: np.ndarray, y: np.ndarray, vertex: tuple[float, float]
+) -> tuple[float, float, float, float]:
+    px, py = vertex
+
+    # Initial guess from the algebraic fit (falls back to the centroid)
+    xc0, yc0, _, _ = least_squares_circle_through_point(x, y, vertex)
+    if not np.isfinite(xc0):
+        xc0, yc0 = x.mean(), y.mean()
+
+    def residuals(c):
+        xc, yc = c
+        radius = np.hypot(xc - px, yc - py)  # constraint: circle passes through vertex
+        return np.hypot(x - xc, y - yc) - radius
+
+    result = least_squares(residuals, x0=[xc0, yc0])
+
+    xc, yc = result.x
+    radius = np.hypot(xc - px, yc - py)
+    res = residuals(result.x)
+    return (xc, yc, radius, np.sum(res**2.0))
+    
 def Straight_Tracks_Estimation(cluster, ref_est, det_params):
     direction = cluster.direction # We already know the direction from the clustering phase
 

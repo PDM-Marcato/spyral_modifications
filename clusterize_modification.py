@@ -4,25 +4,32 @@ from dataclasses import dataclass
 
 from spyral.core.point_cloud import PointCloud
 from spyral.core.clusterize import LabeledCloud, Direction
+from spyral.core.cluster import Cluster
+from spyral.core.point_cloud import PointCloud, sort_point_cloud_in_z
 
 
 sys.path.append('/home/danilo-marcato/Documents/TriplClust')
 
 sys.path.insert(0, "/home/danilo-marcato/Documents/ransac_cpp")
 
-sys.path.append('/home/danilo-marcato/Documents/Python_binding_ransac_STD17_lines')
+sys.path.insert(0, '/home/danilo-marcato/Documents/ransac_lines')
 
 import pyTrackinglines
 from ransac_circle_fit import ransac_circle_fit, ransac_multi_circle_fit
 import pyTriplClust
 
+NOISE_LABEL:int = -1
+
 @dataclass
 class RevaluationParameters:
+    min_cloud_size: int = 30,
     threshold_circle: float = 25.0
     threshold_line: float = 25.0
     min_inliers: int = 20
     n_iterations: int = 2000
     origin_weight: float = 2.0
+    radius_cut: float = 30.0
+    inside_perc: float = 0.75
     max_revaluation: int = 5
     use_radius: bool = True
     ang_min:float = 2.5
@@ -32,6 +39,7 @@ class RevaluationParameters:
     zone_2: float = 25.0
     dm: float = 10.0
     reeavaluate_all: bool = False
+    discartNoise: bool = True
     
     rng_seed: int = 42   # NOTE: never passed into ransac_circle_fit / ransac_multi_circle_fit /
     # RANSAC_Line from this file. If those functions don't read a seed
@@ -180,10 +188,6 @@ def Revaluation_Step(cluster_data, idx_remaining, revaluation_parms=RevaluationP
             idx.append(l.ClusterIndex)
             continue
 
-        # NOTE: asymmetric acceptance windows depending on `back` — presumably
-        # intentional (handling tracks curving the other way), but worth a
-        # one-line comment explaining the physical reasoning so it's not
-        # mistaken for a typo (7.5/2.5 swapped) by a future reader.
         if back:
             if main_angle_degrees - revaluation_parms.ang_max < angle_degrees < main_angle_degrees + revaluation_parms.ang_min:
                 idx.append(l.ClusterIndex)
@@ -259,10 +263,14 @@ def Clusters_Revaluation(clusters, labels, revaluation_parms=RevaluationParamete
             verbose=False)
         
         if revaluation_parms.reeavaluate_all:
-            revaluation_labels = TriplClust_Revaluation(cluster_data, revaluation_parms)
-            revaluation_labels, number_labels = Relabel_Cluster(revaluation_labels, current_label)
-            current_label += number_labels
-            new_labels[mask] = revaluation_labels
+            if len(fitted_circles) > 0 and Track_Classification(cluster_data, revaluation_parms):
+                revaluation_labels = TriplClust_Revaluation(cluster_data, revaluation_parms)
+                revaluation_labels, number_labels = Relabel_Cluster(revaluation_labels, current_label)
+                current_label += number_labels
+                new_labels[mask] = revaluation_labels
+            else:
+                new_labels[mask] = current_label
+                current_label += 1
         
         else:
             if len(fitted_circles) > 1:
@@ -464,7 +472,7 @@ def Chose_Cluster_Direction(cloud, labels, revaluation_parms=RevaluationParamete
     new_clusters: list[LabeledCloud] = []
     for label in np.unique(labels):
         mask = (labels == label)
-        if label == -1 or cluster_metrics[label, 10] == 0:
+        if label == -1 or cluster_metrics[label][5] == 0:
             new_clusters.append(
                 LabeledCloud(
                     label,
@@ -478,7 +486,7 @@ def Chose_Cluster_Direction(cloud, labels, revaluation_parms=RevaluationParamete
             new_clusters.append(
                 LabeledCloud(
                     label,
-                    Direction.FORWARD if cluster_metrics[label, 3] > 0.0 else Direction.BACKWARD,
+                    Direction.FORWARD if cluster_metrics[label][3] > 0.0 else Direction.BACKWARD,
                     PointCloud(cloud.event_number, cloud.data[mask]),
                     np.flatnonzero(mask),
                 )
@@ -492,20 +500,60 @@ def range_overlap(a, b, lo=5, hi=95):
     union = max(a_hi, b_hi) - min(a_lo, b_lo)
     return inter / union 
 
+def Convert_Labeled_Cluster(cloud: LabeledCloud):
+    # Joining can make point cloud unsorted
+    sort_point_cloud_in_z(cloud.point_cloud)
+    data = np.zeros((len(cloud.point_cloud), 5))
+    data[:, :3] = cloud.point_cloud.data[:, :3]  # position
+    data[:, 3] = cloud.point_cloud.data[:, 4]  # peak integral
+    data[:, 4] = cloud.point_cloud.data[:, 7]  # scale (big or small)
+    cluster = Cluster(cloud.point_cloud.event_number, cloud.label, cloud.direction, data)
+    #outliers = cluster.drop_outliers(params.outlier_scale_factor)
+    return cluster
+    
+def Clean_Clusters(clusters, revaluation_parms):
+	cleaned = []
+	for cluster in clusters:
+		if revaluation_parms.discartNoise:
+			if cluster.label == NOISE_LABEL:
+				continue
+		clean_cluster = Convert_Labeled_Cluster(cluster)
+		cleaned.append(clean_cluster)
+	return cleaned
+
+def Track_Classification(cluster_data, revaluation_parms):
+    
+    x = cluster_data[:, 0]
+    y = cluster_data[:, 1]
+    z = cluster_data[:, 2]
+    
+    x_m = np.mean(x)
+    y_m = np.mean(y)
+    
+    dist_squared = (x - x_m) ** 2 + (y - y_m) ** 2
+    inside_count = np.sum(dist_squared <= revaluation_parms.radius_cut**2)
+    if (inside_count/ len(cluster_data) > revaluation_parms.inside_perc):
+        return False
+    else:
+        return True
+	
 def New_Clustering_Method(cloud, revaluation_parms=RevaluationParameters()):
     """
     Full pipeline: TriplClust -> per-cluster circle-fit based revaluation
     (splitting overlapping tracks) -> per-cluster metrics -> merge clusters
     that look like the same track (Join_Clusters).
     """
+    print("ok")
     clusters_TriplClust, labels_TriplClust = TriplClust(cloud)
- 
-    new_labels = Clusters_Revaluation(
-        clusters_TriplClust, labels_TriplClust, revaluation_parms)
+    print("ok")
+    new_labels = Clusters_Revaluation(clusters_TriplClust, labels_TriplClust, revaluation_parms)
     new_clusters = Create_Cluster(cloud, new_labels)
- 
+    print("ok")
     cluster_metrics = Clusters_Metrics(new_clusters, new_labels, revaluation_parms)
     joined_clusters, joined_labels = Join_Clusters(cluster_metrics, new_clusters, new_labels, cloud, revaluation_parms)
-    finished_clusters, finished_labels = Chose_Cluster_Direction(cloud, joined_labels, revaluation_parms)
+    print("ok")
+    direction_clusters, direction_labels = Chose_Cluster_Direction(cloud, joined_labels, revaluation_parms)
+    print("ok")
+    cleaned_clusters = Clean_Clusters(direction_clusters, revaluation_parms)
  
-    return finished_clusters, finished_labels
+    return cleaned_clusters
